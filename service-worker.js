@@ -1,6 +1,6 @@
 // Cache do "esqueleto" do app para abrir sem internet.
 // Estratégia: rede primeiro (sempre pega a versão mais nova), cache como reserva.
-const CACHE_NAME = 'financas-casal-v2';
+const CACHE_NAME = 'financas-casal-v3';
 const ARQUIVOS = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', event => {
