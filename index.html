@@ -192,7 +192,7 @@ const CONFIG = {
 };
 const CATS = ['CONTAS', 'MERCADO', 'DELIVERY', 'ENCONTRO', 'SAÍDAS', 'PRESENTE', 'EXTRAS'];
 const FONTES = ['SALÁRIO JALL', 'SALÁRIO MT', 'DINHEIRO FÍSICO', 'PIX RECEBIDO'];
-const TITULOS = { inicio: 'Início', previsoes: 'Previsões', real: 'Orçamento real', historico: 'Histórico', cartoes: 'Cartões', economias: 'Economias', mais: 'Mais' };
+const TITULOS = { inicio: 'Início', previsoes: 'Previsões', real: 'Orçamento real', historico: 'Histórico', cartoes: 'Cartões', economias: 'Caixinhas', mais: 'Mais' };
 const VAZIO = { Lancamentos: [], Previsoes: [], Cartoes: [], Caixinhas: [], Aportes: [], config: { emails: '' } };
 
 /* ---------- utilidades ---------- */
@@ -297,6 +297,9 @@ const lancMes = mes => S.data.Lancamentos.filter(l => mesDe(l) === mes);
 const prevMes = mes => S.data.Previsoes.filter(p => String(p.DataPrevista || '').slice(0, 7) === mes);
 const soma = (arr, tipo) => r2(arr.filter(x => x.Tipo === tipo).reduce((s, x) => s + num(x.Valor), 0));
 const cofrinho = () => S.data.Caixinhas.find(c => c.ID === 'saldo') || { Saldo: 0 };
+// Saldo da caixinha = valor aplicado + rendimento acumulado (calculado no servidor, dia útil a dia útil)
+const totalCx = c => r2(num(c.Saldo) + num(c.Rendimento));
+const tetoPadrao = pct => pct === 120 ? 10000 : pct === 115 ? 5000 : 0;
 const faturaDe = (nome, mes) => r2(S.data.Lancamentos.filter(l => l.Tipo === 'Despesa' && l.Metodo === nome && mesDe(l) === mes).reduce((s, l) => s + num(l.Valor), 0));
 // Pago/recebido = a data de pagamento já passou e o servidor já aplicou o valor no cofrinho Saldo
 const pago = l => l.Liquidado !== '' && l.Liquidado != null;
@@ -308,7 +311,7 @@ function emAberto(mes) {
   return { L, P };
 }
 function resumo(mes) {
-  const saldo = num(cofrinho().Saldo), M = lancMes(mes);
+  const saldo = totalCx(cofrinho()), M = lancMes(mes);
   if (mes < mesAtual()) return { passado: true, saldo, rec: soma(M, 'Receita'), gas: soma(M, 'Despesa'), aReceber: 0, aPagar: 0, proj: saldo };
   const { L, P } = emAberto(mes);
   const aReceber = r2(soma(L, 'Receita') + soma(P, 'Receita')), aPagar = r2(soma(L, 'Despesa') + soma(P, 'Despesa'));
@@ -394,8 +397,8 @@ function telaInicio() {
     <div class="card"><h3>Gastos de ${mesTxt} por categoria</h3>
       ${cats.length ? cats.map(x => `<div class="cat"><div class="h"><span>${esc(x.c)}</span><span><b>${brl(x.real)}</b>${x.prev ? ` <small>/ previsto ${brl(x.prev)}</small>` : ''}</span></div><div class="bar"><i style="width:${Math.round(x.real / max * 100)}%"></i></div></div>`).join('') : '<div class="vazio">Sem gastos neste mês.</div>'}
     </div>
-    <div class="card"><h3>Resumo das economias <span class="val">${brl(S.data.Caixinhas.reduce((s, c) => s + num(c.Saldo), 0))}</span></h3>
-      ${S.data.Caixinhas.map(c => `<div class="row"><span class="l"><div class="t">${esc(c.Nome)}</div></span><span class="val">${brl(c.Saldo)}</span></div>`).join('') || '<div class="vazio">Nenhuma caixinha.</div>'}
+    <div class="card"><h3>Resumo das economias <span class="val">${brl(S.data.Caixinhas.reduce((s, c) => s + totalCx(c), 0))}</span></h3>
+      ${S.data.Caixinhas.map(c => `<div class="row"><span class="l"><div class="t">${esc(c.Nome)}</div>${num(c.Rendimento) ? `<div class="m">Rendeu ${brl(c.Rendimento)}</div>` : ''}</span><span class="val">${brl(totalCx(c))}</span></div>`).join('') || '<div class="vazio">Nenhuma caixinha.</div>'}
     </div>`;
 }
 
@@ -456,21 +459,33 @@ function telaCartoes() {
     <button class="btn sec" data-act="editar-cartao" data-id="">+ Adicionar cartão</button>`;
 }
 
-function cdiLabel(c) { return num(c.PercentCDI) ? num(c.PercentCDI) + '% do CDI' + (c.DataLimite ? ' · até ' + dataBR(c.DataLimite) : '') : ''; }
+function cdiLabel(c) {
+  const pct = num(c.PercentCDI) || 100, teto = num(c.Teto) || tetoPadrao(pct);
+  return pct + '% do CDI' + (teto && pct > 100 ? ' até ' + brl(teto).replace(',00', '') : '') + (c.DataLimite ? ' · até ' + dataBR(c.DataLimite) + ', depois 120%' : '');
+}
+function rendInfo(c, claro) {
+  const st = claro ? ' class="d"' : ' style="font-size:12px;color:var(--mut)"';
+  if (!c.RendidoAte && !num(c.Rendimento)) return `<div${st}>O rendimento aparece a partir do próximo dia útil após o aporte.</div>`;
+  return `<div${st}>Rendeu ${brl(c.Rendimento)}${num(c.UltimoRendimento) ? ` · +${brl(c.UltimoRendimento)} em ${esc(diaMes(c.RendidoAte))}` : ''}${num(c.IREstimado) ? ` · IR se resgatar hoje: ${brl(c.IREstimado)}` : ''}</div>`;
+}
 function telaEconomias() {
   const cx = S.data.Caixinhas, fixo = cofrinho(), outras = cx.filter(c => c.ID !== 'saldo');
   const hist = S.data.Aportes.slice().sort((a, b) => String(b.Data).localeCompare(String(a.Data)) || String(b.ID).localeCompare(String(a.ID))).slice(0, 12);
   const nomeDe = id => (cx.find(c => c.ID === id) || {}).Nome || 'Caixinha removida';
   const acoes = id => `<div class="acoes"><button data-act="aporte" data-tipo="Aporte" data-id="${esc(id)}">Aportar</button><button data-act="aporte" data-tipo="Resgate" data-id="${esc(id)}">Resgatar</button><button data-act="editar-caixinha" data-id="${esc(id)}">Editar</button></div>`;
   return `<div class="cartao grad"><div class="h"><span>Cofrinho ${esc(fixo.Nome || 'Saldo')}</span><span class="pill" style="background:rgba(255,255,255,.2);color:#fff">Fixo</span></div>
-      <div class="f" style="font-size:30px">${brl(fixo.Saldo)}</div><div class="d">${esc([fixo.Instituicao, cdiLabel(fixo)].filter(Boolean).join(' · '))}</div><div class="d" style="margin-top:6px">Recebimentos entram e pagamentos saem daqui sozinhos, na data de cada um.</div>${fixo.ID ? acoes('saldo') : ''}</div>
+      <div class="f" style="font-size:30px">${brl(totalCx(fixo))}</div><div class="d">${esc([fixo.Instituicao, cdiLabel(fixo)].filter(Boolean).join(' · '))}</div>${fixo.ID ? rendInfo(fixo, true) : ''}<div class="d" style="margin-top:6px">Recebimentos entram e pagamentos saem daqui sozinhos, na data de cada um.</div>${fixo.ID ? acoes('saldo') : ''}</div>
     <div class="card"><h3>Outras caixinhas</h3>
-      ${outras.map(c => `<div style="padding:10px 0;border-bottom:1px solid var(--lin)"><div class="row" style="border:0;padding:0 0 8px"><span class="l"><div class="t">${esc(c.Nome)}</div><div class="m">${esc([c.Instituicao, cdiLabel(c)].filter(Boolean).join(' · '))}</div></span><span class="val">${brl(c.Saldo)}</span></div>
+      ${outras.map(c => `<div style="padding:10px 0;border-bottom:1px solid var(--lin)"><div class="row" style="border:0;padding:0 0 8px"><span class="l"><div class="t">${esc(c.Nome)}</div><div class="m" style="white-space:normal">${esc([c.Instituicao, cdiLabel(c)].filter(Boolean).join(' · '))}</div></span><span class="val">${brl(totalCx(c))}</span></div>${rendInfo(c)}<div style="height:8px"></div>
         <div class="btns"><button class="btn mini" data-act="aporte" data-tipo="Aporte" data-id="${esc(c.ID)}">Aportar</button><button class="btn mini sec" data-act="aporte" data-tipo="Resgate" data-id="${esc(c.ID)}">Resgatar</button><button class="btn mini sec" data-act="editar-caixinha" data-id="${esc(c.ID)}">Editar</button></div></div>`).join('') || '<div class="vazio">Crie caixinhas para viagem, emergência e outros objetivos.</div>'}
     </div>
     <button class="btn sec" data-act="editar-caixinha" data-id="">+ Nova caixinha</button>
     <div class="card"><h3>Últimas movimentações</h3>
-      ${hist.map(a => `<div class="row"><span class="l"><div class="t">${esc(a.Tipo)} · ${esc(nomeDe(a.CaixinhaID))}</div><div class="m">${esc(dataBR(a.Data))}${a.CriadoPor ? ' · ' + esc(a.CriadoPor) : ''}</div></span><span class="val ${a.Tipo === 'Resgate' ? 'neg' : 'pos'}">${a.Tipo === 'Resgate' ? '−' : '+'} ${brl(a.Valor)}</span></div>`).join('') || '<div class="vazio">Nenhum aporte ou resgate ainda.</div>'}
+      ${hist.map(a => { const neg = a.Tipo === 'Resgate' || num(a.Valor) < 0; return `<div class="row"><span class="l"><div class="t">${esc(a.Tipo)} · ${esc(nomeDe(a.CaixinhaID))}</div><div class="m">${esc(dataBR(a.Data))}${a.CriadoPor ? ' · ' + esc(a.CriadoPor) : ''}</div></span><span class="val ${neg ? 'neg' : 'pos'}">${neg ? '−' : '+'} ${brl(Math.abs(num(a.Valor)))}</span></div>`; }).join('') || '<div class="vazio">Nenhum aporte ou resgate ainda.</div>'}
+    </div>
+    <div class="card"><h3>Como as caixinhas rendem</h3>
+      <p class="dica">Seguindo as regras do Cofrinho do Mercado Pago: rendem só em dias úteis, pela taxa CDI diária publicada pelo Banco Central, multiplicada pelo % do CDI de cada caixinha, e o rendimento de um dia também rende nos seguintes. Cada aporte começa a render na própria data (ou no próximo dia útil) e resgates e pagamentos param de render na data em que saem.</p>
+      <p class="dica" style="margin-top:8px">O % turbinado vale até o limite (120% até R$ 10 mil, 115% até R$ 5 mil); o que passar rende 100%. O IR (22,5% a 15%, conforme o tempo de cada aporte) só é cobrado no resgate, por isso aparece como estimativa. O CDI do dia sai no dia útil seguinte, então o rendimento aparece com um dia de atraso. Os valores são uma estimativa e podem diferir do banco em alguns centavos.</p>
     </div>`;
 }
 
@@ -634,32 +649,44 @@ function formCaixinha(id) {
   abrirSheet(c.ID ? 'Editar caixinha' : 'Nova caixinha', `<form id="form-caixinha" style="display:flex;flex-direction:column;gap:12px">
     <label>Nome<input id="x-nome" required maxlength="30" value="${esc(c.Nome)}" placeholder="Ex.: Viagem"></label>
     <label>Instituição<input id="x-inst" maxlength="30" value="${esc(c.Instituicao)}" placeholder="Ex.: Banco"></label>
-    ${c.ID ? '' : '<label>Saldo inicial (R$)<input id="x-saldo" inputmode="decimal" placeholder="0,00"></label>'}
-    <label>Rendimento<select id="x-cdi"><option value="120">120% do CDI</option><option value="130">130% do CDI · Cofrinho da Virada (até 11/02/2027)</option><option value="0">Não informar</option></select></label>
+    ${c.ID ? '' : `<div class="duo"><label>Saldo inicial (R$)<input id="x-saldo" inputmode="decimal" placeholder="0,00"></label><label>Data do aporte<input id="x-data" type="date" value="${hoje()}"></label></div>`}
+    <label>Rendimento<select id="x-cdi"><option value="100">100% do CDI</option><option value="115">115% do CDI (depósito de R$ 1.000 no mês)</option><option value="120">120% do CDI (Meli+)</option><option value="130">130% do CDI · Cofrinho da Virada (até 11/02/2027)</option></select></label>
+    <label id="w-teto">Limite com o % turbinado (R$)<input id="x-teto" inputmode="decimal" value="${num(c.Teto) ? num(c.Teto).toFixed(2).replace('.', ',') : ''}"></label>
     <p class="dica">${c.ID ? 'Para mudar o saldo, use Aportar ou Resgatar.' : ''}</p>
     <button class="btn">Salvar</button>${c.ID && c.ID !== 'saldo' ? '<button type="button" class="btn perigo" data-act="excluir-caixinha">Excluir caixinha</button>' : ''}</form>`);
-  $('x-cdi').value = c.ID ? String(num(c.PercentCDI) === 130 ? 130 : num(c.PercentCDI) === 120 ? 120 : 0) : '120';
+  $('x-cdi').value = String([100, 115, 120, 130].includes(num(c.PercentCDI)) ? num(c.PercentCDI) : c.ID ? 100 : 120);
+  ajustaTeto();
+}
+function ajustaTeto() {
+  const pct = num($('x-cdi').value), t = tetoPadrao(pct);
+  $('w-teto').classList.toggle('hidden', pct <= 100);
+  $('x-teto').placeholder = t ? brl(t).replace(',00', '') + ' (padrão)' : 'Sem limite';
 }
 async function salvarCaixinha(btn) {
   const f = S.form, cdi = num($('x-cdi').value);
-  const row = { ID: f.id || 'x-' + novoId(), Nome: $('x-nome').value.trim(), Instituicao: $('x-inst').value.trim(), PercentCDI: cdi || '', DataLimite: cdi === 130 ? '2027-02-11' : '' };
+  const row = { ID: f.id || 'x-' + novoId(), Nome: $('x-nome').value.trim(), Instituicao: $('x-inst').value.trim(), PercentCDI: cdi || 100, DataLimite: cdi === 130 ? '2027-02-11' : '', Teto: cdi > 100 ? (parseValor($('x-teto').value) || '') : '' };
   if (!row.Nome) return toast('Informe o nome.');
-  if (!f.id) { row.Saldo = parseValor($('x-saldo').value); row.Fixo = 'Não'; }
+  const ops = [{ op: 'upsert', sheet: 'Caixinhas', row }];
+  if (!f.id) {
+    const v = parseValor($('x-saldo').value);
+    row.Saldo = v; row.Fixo = 'Não';
+    if (v) ops.push({ op: 'upsert', sheet: 'Aportes', row: { ID: novoId(), Data: $('x-data').value || hoje(), CaixinhaID: row.ID, Tipo: 'Aporte', Valor: v, CriadoPor: LS.get('quem') || '' } });
+  }
   ocupado(btn, true);
-  if (!(await gravar([{ op: 'upsert', sheet: 'Caixinhas', row }]))) ocupado(btn, false);
+  if (!(await gravar(ops))) ocupado(btn, false);
 }
 function formAporte(id, tipo) {
   const c = S.data.Caixinhas.find(x => x.ID === id); if (!c) return;
   S.form = { kind: 'aporte', id, tipo };
   abrirSheet((tipo === 'Aporte' ? 'Aportar em ' : 'Resgatar de ') + c.Nome, `<form id="form-aporte" style="display:flex;flex-direction:column;gap:12px">
-    <p class="dica">Saldo atual: ${brl(c.Saldo)}</p>
+    <p class="dica">Saldo atual: ${brl(totalCx(c))}${tipo === 'Aporte' ? ' · o aporte começa a render na data escolhida (ou no próximo dia útil)' : ''}</p>
     <div class="duo"><label>Valor (R$)<input id="a-valor" inputmode="decimal" required placeholder="0,00"></label><label>Data<input id="a-data" type="date" required value="${hoje()}"></label></div>
     <button class="btn">${tipo === 'Aporte' ? 'Aportar' : 'Resgatar'}</button></form>`);
 }
 async function salvarAporte(btn) {
   const f = S.form, v = parseValor($('a-valor').value), c = S.data.Caixinhas.find(x => x.ID === f.id);
   if (!v) return toast('Informe o valor.');
-  if (f.tipo === 'Resgate' && v > num(c.Saldo)) return toast('O resgate é maior que o saldo da caixinha.');
+  if (f.tipo === 'Resgate' && v > totalCx(c)) return toast('O resgate é maior que o saldo da caixinha.');
   ocupado(btn, true);
   const ops = [{ op: 'increment', sheet: 'Caixinhas', id: f.id, field: 'Saldo', delta: f.tipo === 'Aporte' ? v : -v },
     { op: 'upsert', sheet: 'Aportes', row: { ID: novoId(), Data: $('a-data').value, CaixinhaID: f.id, Tipo: f.tipo, Valor: v, CriadoPor: LS.get('quem') || '' } }];
@@ -730,6 +757,7 @@ document.addEventListener('click', e => {
 });
 
 document.addEventListener('input', e => {
+  if (e.target.id === 'x-cdi') ajustaTeto();
   if (!S.form || !e.target.closest('#form-item')) return;
   if (e.target.id === 'f-d2') S.form.d2manual = true;
   if (e.target.id === 'f-met' || e.target.id === 'f-d1') S.form.d2manual = false;
