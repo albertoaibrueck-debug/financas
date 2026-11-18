@@ -299,7 +299,7 @@ const soma = (arr, tipo) => r2(arr.filter(x => x.Tipo === tipo).reduce((s, x) =>
 const cofrinho = () => S.data.Caixinhas.find(c => c.ID === 'saldo') || { Saldo: 0 };
 // Saldo da caixinha = valor aplicado + rendimento acumulado (calculado no servidor, dia útil a dia útil)
 const totalCx = c => r2(num(c.Saldo) + num(c.Rendimento));
-const tetoPadrao = pct => pct === 120 ? 10000 : pct === 115 ? 5000 : 0;
+const tetoPadrao = pct => pct === 120 ? 10000 : pct === 115 || pct === 130 ? 5000 : 0;
 const faturaDe = (nome, mes) => r2(S.data.Lancamentos.filter(l => l.Tipo === 'Despesa' && l.Metodo === nome && mesDe(l) === mes).reduce((s, l) => s + num(l.Valor), 0));
 // Pago/recebido = a data de pagamento já passou e o servidor já aplicou o valor no cofrinho Saldo
 const pago = l => l.Liquidado !== '' && l.Liquidado != null;
@@ -317,7 +317,7 @@ function resumo(mes) {
   const aReceber = r2(soma(L, 'Receita') + soma(P, 'Receita')), aPagar = r2(soma(L, 'Despesa') + soma(P, 'Despesa'));
   return { saldo, aReceber, aPagar, proj: r2(saldo + aReceber - aPagar) };
 }
-const ehCartao = l => l.Tipo === 'Despesa' && l.Metodo && l.Metodo !== 'DÉBITO';
+const ehCartao = l => l.Tipo === 'Despesa' && l.Metodo && l.Metodo !== 'DÉBITO' && l.Metodo !== 'PIX';
 // Agrupa gastos de cartão em faturas (cartão + data de vencimento)
 function faturas(lista) {
   const g = {};
@@ -330,13 +330,13 @@ const metodos = () => S.data.Cartoes.map(c => c.Nome).concat(['DÉBITO']);
 
 /* ---------- telas ---------- */
 function itemRow(x, kind) {
-  const rec = x.Tipo === 'Receita';
+  const rec = x.Tipo === 'Receita', reemb = x.Tipo === 'Despesa' && num(x.Valor) < 0;
   const data = kind === 'prev' ? x.DataPrevista : (x.DataPagamento || x.DataLancamento);
   const parc = num(x.ParcelaTotal) > 1 ? ' · ' + num(x.ParcelaAtual) + '/' + num(x.ParcelaTotal) : '';
-  const meta = [diaMes(data), x.Categoria, rec ? '' : x.Metodo].filter(Boolean).join(' · ') + parc + (kind === 'lanc' && pago(x) ? (rec ? ' · ✓ recebido' : ' · ✓ pago') : '') + (kind === 'prev' && S.tab === 'inicio' ? ' · previsto' : '');
+  const meta = [diaMes(data), x.Categoria, rec ? '' : x.Metodo].filter(Boolean).join(' · ') + parc + (reemb ? ' · reembolso' : '') + (kind === 'lanc' && pago(x) ? (rec ? ' · ✓ recebido' : reemb ? ' · ✓ creditado' : ' · ✓ pago') : '') + (kind === 'prev' && S.tab === 'inicio' ? ' · previsto' : '');
   return `<button class="row" data-act="editar" data-kind="${kind}" data-id="${esc(x.ID)}">
     <span class="l"><div class="t">${esc(x.Descricao || x.Categoria)}</div><div class="m">${esc(meta)}${x.CriadoPor ? ' · ' + esc(x.CriadoPor) : ''}</div></span>
-    <span class="val ${rec ? 'pos' : 'neg'}">${rec ? '+' : '−'} ${brl(x.Valor)}</span></button>`;
+    <span class="val ${rec || reemb ? 'pos' : 'neg'}">${rec || reemb ? '+' : '−'} ${brl(Math.abs(num(x.Valor)))}</span></button>`;
 }
 
 function telaInicio() {
@@ -466,11 +466,17 @@ function cdiLabel(c) {
 function rendInfo(c, claro) {
   const st = claro ? ' class="d"' : ' style="font-size:12px;color:var(--mut)"';
   if (!c.RendidoAte && !num(c.Rendimento)) return `<div${st}>O rendimento aparece a partir do próximo dia útil após o aporte.</div>`;
-  return `<div${st}>Rendeu ${brl(c.Rendimento)}${num(c.UltimoRendimento) ? ` · +${brl(c.UltimoRendimento)} em ${esc(diaMes(c.RendidoAte))}` : ''}${num(c.IREstimado) ? ` · IR se resgatar hoje: ${brl(c.IREstimado)}` : ''}</div>`;
+  return `<div${st}>Rendeu ${brl(c.Rendimento)} (já sem IR)${num(c.UltimoRendimento) ? ` · último crédito +${brl(c.UltimoRendimento)} em ${esc(diaMes(proximoUtil(c.RendidoAte)))}` : ''}</div>`;
+}
+// o rendimento de um dia útil é creditado na madrugada do dia útil seguinte
+function proximoUtil(d) {
+  const x = new Date(d + 'T12:00:00Z');
+  do { x.setUTCDate(x.getUTCDate() + 1); } while (x.getUTCDay() === 0 || x.getUTCDay() === 6);
+  return x.toISOString().slice(0, 10);
 }
 function telaEconomias() {
   const cx = S.data.Caixinhas, fixo = cofrinho(), outras = cx.filter(c => c.ID !== 'saldo');
-  const hist = S.data.Aportes.slice().sort((a, b) => String(b.Data).localeCompare(String(a.Data)) || String(b.ID).localeCompare(String(a.ID))).slice(0, 12);
+  const hist = S.data.Aportes.slice().sort((a, b) => String(b.Data).localeCompare(String(a.Data)) || String(b.ID).localeCompare(String(a.ID))).slice(0, 20);
   const nomeDe = id => (cx.find(c => c.ID === id) || {}).Nome || 'Caixinha removida';
   const acoes = id => `<div class="acoes"><button data-act="aporte" data-tipo="Aporte" data-id="${esc(id)}">Aportar</button><button data-act="aporte" data-tipo="Resgate" data-id="${esc(id)}">Resgatar</button><button data-act="editar-caixinha" data-id="${esc(id)}">Editar</button></div>`;
   return `<div class="cartao grad"><div class="h"><span>Cofrinho ${esc(fixo.Nome || 'Saldo')}</span><span class="pill" style="background:rgba(255,255,255,.2);color:#fff">Fixo</span></div>
@@ -481,11 +487,11 @@ function telaEconomias() {
     </div>
     <button class="btn sec" data-act="editar-caixinha" data-id="">+ Nova caixinha</button>
     <div class="card"><h3>Últimas movimentações</h3>
-      ${hist.map(a => { const neg = a.Tipo === 'Resgate' || num(a.Valor) < 0; return `<div class="row"><span class="l"><div class="t">${esc(a.Tipo)} · ${esc(nomeDe(a.CaixinhaID))}</div><div class="m">${esc(dataBR(a.Data))}${a.CriadoPor ? ' · ' + esc(a.CriadoPor) : ''}</div></span><span class="val ${neg ? 'neg' : 'pos'}">${neg ? '−' : '+'} ${brl(Math.abs(num(a.Valor)))}</span></div>`; }).join('') || '<div class="vazio">Nenhum aporte ou resgate ainda.</div>'}
+      ${hist.map(a => { const neg = sinalMov(a) < 0; return `<button class="row" data-act="mov" data-id="${esc(a.ID)}"><span class="l"><div class="t">${esc(tituloMov(a))} · ${esc(nomeDe(a.CaixinhaID))}</div><div class="m">${esc(dataBR(a.Data))}${a.CriadoPor ? ' · ' + esc(a.CriadoPor) : ''} · toque para editar</div></span><span class="val ${neg ? 'neg' : 'pos'}">${neg ? '−' : '+'} ${brl(Math.abs(num(a.Valor)))}</span></button>`; }).join('') || '<div class="vazio">Nenhum aporte ou resgate ainda.</div>'}
     </div>
     <div class="card"><h3>Como as caixinhas rendem</h3>
-      <p class="dica">Seguindo as regras do Cofrinho do Mercado Pago: rendem só em dias úteis, pela taxa CDI diária publicada pelo Banco Central, multiplicada pelo % do CDI de cada caixinha, e o rendimento de um dia também rende nos seguintes. Cada aporte começa a render na própria data (ou no próximo dia útil) e resgates e pagamentos param de render na data em que saem.</p>
-      <p class="dica" style="margin-top:8px">O % turbinado vale até o limite (120% até R$ 10 mil, 115% até R$ 5 mil); o que passar rende 100%. O IR (22,5% a 15%, conforme o tempo de cada aporte) só é cobrado no resgate, por isso aparece como estimativa. O CDI do dia sai no dia útil seguinte, então o rendimento aparece com um dia de atraso. Os valores são uma estimativa e podem diferir do banco em alguns centavos.</p>
+      <p class="dica">Seguindo as regras do Cofrinho do Mercado Pago: rendem só em dias úteis, pela taxa CDI diária publicada pelo Banco Central, multiplicada pelo % do CDI de cada caixinha. O crédito do dia já vem sem IR (22,5% descontados todo dia), arredondado para baixo no centavo, e entra no saldo na madrugada do dia útil seguinte, passando a render também. Cada aporte começa a render na própria data (ou no próximo dia útil) e retiradas e pagamentos param de render na data em que saem.</p>
+      <p class="dica" style="margin-top:8px">O % turbinado vale até o limite (130% da Virada e 115% até R$ 5 mil, 120% até R$ 10 mil); o que passar rende 100%. O cálculo pode diferir do banco em até 1 centavo por dia: se acontecer, use "Saldo que o banco mostra hoje" em Editar. Toque em uma movimentação para corrigir o valor, a data ou o destino.</p>
     </div>`;
 }
 
@@ -531,15 +537,15 @@ function ocupado(btn, sim) { if (btn) { btn.disabled = sim; if (sim) { btn.datas
 // kind: 'lanc' (orçamento real) ou 'prev' (previsão). item = registro existente; pre = valores iniciais
 function formItem(kind, item, pre) {
   const x = item || pre || {};
-  const tipo = x.Tipo || 'Despesa';
+  const tipo = x.Tipo === 'Despesa' && num(x.Valor) < 0 && kind === 'lanc' ? 'Reembolso' : (x.Tipo || 'Despesa');
   const d1 = kind === 'prev' ? (x.DataPrevista || (S.mes === hoje().slice(0, 7) ? hoje() : S.mes + '-01')) : (x.DataLancamento || hoje());
   S.form = { kind, id: item ? item.ID : null, tipo, prevId: pre && pre.prevId || '', d2manual: !!(item && item.DataPagamento) };
   abrirSheet((item ? 'Editar ' : 'Nov' + (kind === 'prev' ? 'a ' : 'o ')) + (kind === 'prev' ? 'previsão' : 'lançamento'), `
     <form id="form-item" style="display:flex;flex-direction:column;gap:12px">
-      <div class="seg" id="f-tipo"><button type="button" data-tipo="Despesa">Gasto</button><button type="button" data-tipo="Receita">Receita</button></div>
+      <div class="seg" id="f-tipo"><button type="button" data-tipo="Despesa">Gasto</button><button type="button" data-tipo="Receita">Receita</button>${kind === 'lanc' ? '<button type="button" data-tipo="Reembolso">Reembolso</button>' : ''}</div>
       <label>Descrição<input id="f-desc" value="${esc(x.Descricao)}" maxlength="80" placeholder="Ex.: Conta de luz"></label>
       <div class="duo">
-        <label>Valor (R$)<input id="f-valor" inputmode="decimal" required value="${x.Valor ? num(x.Valor).toFixed(2).replace('.', ',') : ''}" placeholder="0,00"></label>
+        <label>Valor (R$)<input id="f-valor" inputmode="decimal" required value="${x.Valor ? Math.abs(num(x.Valor)).toFixed(2).replace('.', ',') : ''}" placeholder="0,00"></label>
         <label><span id="l-cat">Categoria</span><select id="f-cat"></select></label>
       </div>
       <label id="w-met">Método de pagamento<select id="f-met">${opts([...new Set(metodos().concat(x.Metodo ? [x.Metodo] : []))], x.Metodo || 'DÉBITO')}</select></label>
@@ -557,7 +563,7 @@ function formItem(kind, item, pre) {
 }
 function ajustaForm() {
   const f = S.form; if (!f) return;
-  const rec = f.tipo === 'Receita', lanc = f.kind === 'lanc';
+  const rec = f.tipo === 'Receita', lanc = f.kind === 'lanc', reemb = f.tipo === 'Reembolso';
   document.querySelectorAll('#f-tipo button').forEach(b => b.classList.toggle('on', b.dataset.tipo === f.tipo));
   const cat = $('f-cat'), lista = rec ? FONTES : CATS;
   // mantém a escolha enquanto o tipo não muda; ao trocar Gasto/Receita, volta para a primeira opção
@@ -566,20 +572,22 @@ function ajustaForm() {
   cat.dataset.tipoAnt = f.tipo;
   $('l-cat').textContent = rec ? 'Fonte' : 'Categoria';
   $('w-met').classList.toggle('hidden', rec);
-  $('l-d1').textContent = !lanc ? 'Data prevista' : rec ? 'Data de recebimento' : 'Data de lançamento';
+  $('l-d1').textContent = !lanc ? 'Data prevista' : rec ? 'Data de recebimento' : reemb ? 'Data do reembolso' : 'Data de lançamento';
   $('w-d2').classList.toggle('hidden', !lanc || rec);
-  $('w-parc').classList.toggle('hidden', !lanc || rec || !!f.id);
+  $('w-d2').firstChild.textContent = reemb ? 'Entra na fatura de' : 'Data de pagamento';
+  $('w-parc').classList.toggle('hidden', !lanc || rec || reemb || !!f.id);
   if (lanc && !rec && !f.d2manual) $('f-d2').value = sugerePagamento($('f-met').value, $('f-d1').value);
   const n = num($('f-parc').value), v = parseValor($('f-valor').value);
   $('f-dica').textContent = lanc && !rec && !f.id && n > 1 && v ? `${n} parcelas de ${brl(v / n)}, a primeira em ${dataBR($('f-d2').value)}.`
+    : reemb ? 'O reembolso abate da fatura desse cartão (no débito, volta para o cofrinho Saldo na data).'
     : lanc && !rec ? 'O valor sai do cofrinho Saldo quando a data de pagamento passar (no cartão, o vencimento da fatura).' : '';
 }
 async function salvarItem(btn) {
-  const f = S.form, rec = f.tipo === 'Receita', quem = LS.get('quem') || '';
-  const valor = parseValor($('f-valor').value), d1 = $('f-d1').value;
+  const f = S.form, rec = f.tipo === 'Receita', reemb = f.tipo === 'Reembolso', quem = LS.get('quem') || '';
+  const valor = parseValor($('f-valor').value), d1 = $('f-d1').value, sinal = reemb ? -1 : 1;
   if (!valor) return toast('Informe o valor.');
   if (!d1) return toast('Informe a data.');
-  const base = { Tipo: f.tipo, Descricao: $('f-desc').value.trim(), Valor: valor, Categoria: $('f-cat').value, Metodo: rec ? '' : $('f-met').value };
+  const base = { Tipo: reemb ? 'Despesa' : f.tipo, Descricao: $('f-desc').value.trim() || (reemb ? 'Reembolso' : ''), Valor: valor * sinal, Categoria: $('f-cat').value, Metodo: rec ? '' : $('f-met').value };
   const ops = [];
   if (f.kind === 'prev') {
     const antigo = f.id && S.data.Previsoes.find(p => p.ID === f.id);
@@ -589,10 +597,10 @@ async function salvarItem(btn) {
     if (f.id) {
       ops.push({ op: 'upsert', sheet: 'Lancamentos', row: Object.assign(base, { ID: f.id, DataLancamento: d1, DataPagamento: d2 }) });
     } else {
-      const n = rec ? 1 : Math.max(1, num($('f-parc').value)), parcela = r2(Math.floor(valor / n * 100) / 100);
+      const n = rec || reemb ? 1 : Math.max(1, num($('f-parc').value)), parcela = r2(Math.floor(valor / n * 100) / 100);
       for (let i = 0; i < n; i++) {
         const id = novoId() + i;
-        ops.push({ op: 'upsert', sheet: 'Lancamentos', row: Object.assign({}, base, { ID: id, Valor: i === n - 1 ? r2(valor - parcela * (n - 1)) : parcela, DataLancamento: d1, DataPagamento: addMeses(d2, i), ParcelaAtual: n > 1 ? i + 1 : '', ParcelaTotal: n > 1 ? n : '', PrevisaoID: i === 0 ? f.prevId : '', CriadoPor: quem }) });
+        ops.push({ op: 'upsert', sheet: 'Lancamentos', row: Object.assign({}, base, { ID: id, Valor: sinal * (i === n - 1 ? r2(valor - parcela * (n - 1)) : parcela), DataLancamento: d1, DataPagamento: addMeses(d2, i), ParcelaAtual: n > 1 ? i + 1 : '', ParcelaTotal: n > 1 ? n : '', PrevisaoID: i === 0 ? f.prevId : '', CriadoPor: quem }) });
         if (i === 0 && f.prevId) ops.push({ op: 'upsert', sheet: 'Previsoes', row: { ID: f.prevId, Status: 'Lançada', LancamentoID: id } });
       }
     }
@@ -652,7 +660,8 @@ function formCaixinha(id) {
     ${c.ID ? '' : `<div class="duo"><label>Saldo inicial (R$)<input id="x-saldo" inputmode="decimal" placeholder="0,00"></label><label>Data do aporte<input id="x-data" type="date" value="${hoje()}"></label></div>`}
     <label>Rendimento<select id="x-cdi"><option value="100">100% do CDI</option><option value="115">115% do CDI (depósito de R$ 1.000 no mês)</option><option value="120">120% do CDI (Meli+)</option><option value="130">130% do CDI · Cofrinho da Virada (até 11/02/2027)</option></select></label>
     <label id="w-teto">Limite com o % turbinado (R$)<input id="x-teto" inputmode="decimal" value="${num(c.Teto) ? num(c.Teto).toFixed(2).replace('.', ',') : ''}"></label>
-    <p class="dica">${c.ID ? 'Para mudar o saldo, use Aportar ou Resgatar.' : ''}</p>
+    ${c.ID ? `<label>Saldo que o banco mostra hoje (R$)<input id="x-real" inputmode="decimal" placeholder="${brl(totalCx(c))}"></label>
+    <p class="dica">Opcional: se o saldo do app estiver diferente do banco (por centavos de arredondamento, por exemplo), digite o valor do banco e o app registra a diferença como ajuste. Para aportes e retiradas, use os botões da caixinha.</p>` : ''}
     <button class="btn">Salvar</button>${c.ID && c.ID !== 'saldo' ? '<button type="button" class="btn perigo" data-act="excluir-caixinha">Excluir caixinha</button>' : ''}</form>`);
   $('x-cdi').value = String([100, 115, 120, 130].includes(num(c.PercentCDI)) ? num(c.PercentCDI) : c.ID ? 100 : 120);
   ajustaTeto();
@@ -667,6 +676,14 @@ async function salvarCaixinha(btn) {
   const row = { ID: f.id || 'x-' + novoId(), Nome: $('x-nome').value.trim(), Instituicao: $('x-inst').value.trim(), PercentCDI: cdi || 100, DataLimite: cdi === 130 ? '2027-02-11' : '', Teto: cdi > 100 ? (parseValor($('x-teto').value) || '') : '' };
   if (!row.Nome) return toast('Informe o nome.');
   const ops = [{ op: 'upsert', sheet: 'Caixinhas', row }];
+  const real = f.id && $('x-real').value.trim() ? parseValor($('x-real').value) : null;
+  if (real != null) {
+    const c = S.data.Caixinhas.find(x => x.ID === f.id), dif = r2(real - totalCx(c));
+    if (Math.abs(dif) >= 0.01) {
+      ops.push({ op: 'increment', sheet: 'Caixinhas', id: f.id, field: 'Saldo', delta: dif });
+      ops.push({ op: 'upsert', sheet: 'Aportes', row: { ID: novoId(), Data: hoje(), CaixinhaID: f.id, Tipo: 'Ajuste', Valor: dif, CriadoPor: LS.get('quem') || '', Destino: '', Vinculo: '' } });
+    }
+  }
   if (!f.id) {
     const v = parseValor($('x-saldo').value);
     row.Saldo = v; row.Fixo = 'Não';
@@ -675,22 +692,99 @@ async function salvarCaixinha(btn) {
   ocupado(btn, true);
   if (!(await gravar(ops))) ocupado(btn, false);
 }
-function formAporte(id, tipo) {
-  const c = S.data.Caixinhas.find(x => x.ID === id); if (!c) return;
-  S.form = { kind: 'aporte', id, tipo };
-  abrirSheet((tipo === 'Aporte' ? 'Aportar em ' : 'Resgatar de ') + c.Nome, `<form id="form-aporte" style="display:flex;flex-direction:column;gap:12px">
-    <p class="dica">Saldo atual: ${brl(totalCx(c))}${tipo === 'Aporte' ? ' · o aporte começa a render na data escolhida (ou no próximo dia útil)' : ''}</p>
-    <div class="duo"><label>Valor (R$)<input id="a-valor" inputmode="decimal" required placeholder="0,00"></label><label>Data<input id="a-data" type="date" required value="${hoje()}"></label></div>
-    <button class="btn">${tipo === 'Aporte' ? 'Aportar' : 'Resgatar'}</button></form>`);
+const sinalMov = m => m.Tipo === 'Resgate' ? -Math.abs(num(m.Valor)) : num(m.Valor);
+const nomeCx = id => (S.data.Caixinhas.find(c => c.ID === id) || {}).Nome || 'caixinha removida';
+function tituloMov(m) {
+  if (m.Tipo === 'Resgate') {
+    if (m.Destino === 'Caixinha') { const p = S.data.Aportes.find(x => x.ID === m.Vinculo); return 'Movido para ' + (p ? nomeCx(p.CaixinhaID) : 'outra caixinha'); }
+    return m.Destino === 'PIX' ? 'Retirada (PIX / pagamento)' : 'Retirada';
+  }
+  if (m.Destino === 'Transferência') { const o = S.data.Aportes.find(x => x.ID === m.Vinculo); return 'Recebido de ' + (o ? nomeCx(o.CaixinhaID) : 'outra caixinha'); }
+  return m.Tipo;
+}
+// id = caixinha; mov = movimentação existente (edição)
+function formAporte(id, tipo, mov) {
+  if (mov && mov.Destino === 'Transferência') { const o = S.data.Aportes.find(x => x.ID === mov.Vinculo); if (o) mov = o; }
+  if (mov) { id = mov.CaixinhaID; tipo = mov.Tipo; }
+  const c = S.data.Caixinhas.find(x => x.ID === id); if (!c) return toast('Essa caixinha foi excluída.');
+  const sistema = mov && mov.Tipo !== 'Aporte' && mov.Tipo !== 'Resgate';
+  const lanc = mov && mov.Destino === 'PIX' ? S.data.Lancamentos.find(l => l.ID === mov.Vinculo) || {} : {};
+  const par = mov && mov.Destino === 'Caixinha' ? S.data.Aportes.find(x => x.ID === mov.Vinculo) : null;
+  const outras = S.data.Caixinhas.filter(x => x.ID !== id);
+  S.form = { kind: 'aporte', id, tipo: sistema ? 'Aporte' : tipo, mov: mov || null, sistema };
+  abrirSheet(mov ? 'Editar movimentação · ' + c.Nome : (tipo === 'Aporte' ? 'Aportar em ' : 'Retirar de ') + c.Nome, `<form id="form-aporte" style="display:flex;flex-direction:column;gap:12px">
+    ${sistema ? `<p class="dica">${esc(mov.Tipo)} criado automaticamente pelo sistema.</p>` : '<div class="seg" id="m-tipo"><button type="button" data-mtipo="Aporte">Aporte</button><button type="button" data-mtipo="Resgate">Retirada</button></div>'}
+    <p class="dica" id="m-saldo"></p>
+    <div class="duo"><label>Valor (R$)<input id="a-valor" inputmode="decimal" required placeholder="0,00" value="${mov ? Math.abs(num(mov.Valor)).toFixed(2).replace('.', ',') : ''}"></label><label>Data<input id="a-data" type="date" required value="${esc(mov ? mov.Data : hoje())}"></label></div>
+    <div id="w-dest" class="hidden" style="display:flex;flex-direction:column;gap:12px">
+      <label>Para onde vai o dinheiro<select id="m-dest">
+        <option value="">Só retirar</option>
+        <option value="PIX">PIX / pagamento (entra nos gastos)</option>
+        ${outras.length ? '<option value="Caixinha">Mover para outra caixinha</option>' : ''}
+      </select></label>
+      <div id="w-pix" class="duo"><label>Descrição<input id="m-desc" maxlength="80" placeholder="Ex.: PIX para ..." value="${esc(lanc.Descricao || '')}"></label><label>Categoria<select id="m-cat">${opts(CATS, lanc.Categoria || 'EXTRAS')}</select></label></div>
+      <label id="w-cx">Caixinha de destino<select id="m-cx">${outras.map(o => `<option value="${esc(o.ID)}"${par && par.CaixinhaID === o.ID ? ' selected' : ''}>${esc(o.Nome)}</option>`).join('')}</select></label>
+    </div>
+    <button class="btn">Salvar</button>
+    ${mov ? '<button type="button" class="btn perigo" data-act="excluir-mov">Excluir movimentação</button>' : ''}</form>`);
+  if ($('m-dest')) $('m-dest').value = mov && mov.Tipo === 'Resgate' ? (mov.Destino || '') : '';
+  ajustaMov();
+}
+function ajustaMov() {
+  const f = S.form; if (!f || f.kind !== 'aporte') return;
+  const c = S.data.Caixinhas.find(x => x.ID === f.id), ret = f.tipo === 'Resgate' && !f.sistema;
+  document.querySelectorAll('#m-tipo button').forEach(b => b.classList.toggle('on', b.dataset.mtipo === f.tipo));
+  $('w-dest').classList.toggle('hidden', !ret);
+  const dest = $('m-dest') ? $('m-dest').value : '';
+  $('w-pix').classList.toggle('hidden', dest !== 'PIX');
+  $('w-cx').classList.toggle('hidden', dest !== 'Caixinha');
+  const disp = disponivel(c, f.mov);
+  $('m-saldo').textContent = 'Saldo disponível: ' + brl(disp) + (f.tipo === 'Aporte' ? ' · o aporte começa a render na data escolhida (ou no próximo dia útil)'
+    : dest === 'PIX' ? ' · o valor sai da caixinha e entra nos gastos do mês, já pago' : dest === 'Caixinha' ? ' · o valor sai desta caixinha e entra na de destino, na mesma data' : '');
+}
+// saldo da caixinha sem contar a movimentação que está sendo editada
+function disponivel(c, mov) {
+  let v = totalCx(c);
+  if (mov && mov.CaixinhaID === c.ID) v -= sinalMov(mov);
+  return r2(v);
+}
+// operações que desfazem uma movimentação (e o que ela gerou: gasto do PIX ou entrada na outra caixinha)
+function desfazerMov(m) {
+  const ops = [], existe = id => S.data.Caixinhas.some(c => c.ID === id);
+  if (existe(m.CaixinhaID)) ops.push({ op: 'increment', sheet: 'Caixinhas', id: m.CaixinhaID, field: 'Saldo', delta: -sinalMov(m) });
+  ops.push({ op: 'delete', sheet: 'Aportes', id: m.ID });
+  if (m.Destino === 'PIX' && m.Vinculo) ops.push({ op: 'delete', sheet: 'Lancamentos', id: m.Vinculo });
+  if (m.Destino === 'Caixinha' && m.Vinculo) {
+    const p = S.data.Aportes.find(x => x.ID === m.Vinculo);
+    if (p) { if (existe(p.CaixinhaID)) ops.push({ op: 'increment', sheet: 'Caixinhas', id: p.CaixinhaID, field: 'Saldo', delta: -sinalMov(p) }); ops.push({ op: 'delete', sheet: 'Aportes', id: p.ID }); }
+  }
+  return ops;
 }
 async function salvarAporte(btn) {
-  const f = S.form, v = parseValor($('a-valor').value), c = S.data.Caixinhas.find(x => x.ID === f.id);
+  const f = S.form, v = parseValor($('a-valor').value), data = $('a-data').value, c = S.data.Caixinhas.find(x => x.ID === f.id);
+  const quem = LS.get('quem') || '', ret = f.tipo === 'Resgate' && !f.sistema, dest = ret ? $('m-dest').value : '';
   if (!v) return toast('Informe o valor.');
-  if (f.tipo === 'Resgate' && v > totalCx(c)) return toast('O resgate é maior que o saldo da caixinha.');
+  if (!data) return toast('Informe a data.');
+  if (ret && v > disponivel(c, f.mov) + 0.001) return toast('A retirada é maior que o saldo da caixinha.');
+  const ops = f.mov ? desfazerMov(f.mov) : [];
+  const id = f.mov ? f.mov.ID : novoId();
+  const valor = f.sistema ? (num(f.mov.Valor) < 0 ? -v : v) : v;
+  const row = { ID: id, Data: data, CaixinhaID: f.id, Tipo: f.sistema ? f.mov.Tipo : f.tipo, Valor: valor, CriadoPor: f.mov ? f.mov.CriadoPor : quem, Destino: dest, Vinculo: '' };
+  ops.push({ op: 'increment', sheet: 'Caixinhas', id: f.id, field: 'Saldo', delta: sinalMov(row) });
+  if (dest === 'PIX') {
+    row.Vinculo = novoId() + 'p';
+    ops.push({ op: 'upsert', sheet: 'Lancamentos', row: { ID: row.Vinculo, Tipo: 'Despesa', Descricao: $('m-desc').value.trim() || 'PIX da caixinha ' + c.Nome, Valor: v, Categoria: $('m-cat').value, Metodo: 'PIX', DataLancamento: data, DataPagamento: data, CriadoPor: quem, Origem: f.id } });
+  } else if (dest === 'Caixinha') {
+    const destino = $('m-cx').value;
+    if (!destino || destino === f.id) return toast('Escolha a caixinha de destino.');
+    row.Vinculo = novoId() + 't';
+    ops.push({ op: 'increment', sheet: 'Caixinhas', id: destino, field: 'Saldo', delta: v });
+    ops.push({ op: 'upsert', sheet: 'Aportes', row: { ID: row.Vinculo, Data: data, CaixinhaID: destino, Tipo: 'Aporte', Valor: v, CriadoPor: quem, Destino: 'Transferência', Vinculo: id } });
+  }
+  ops.push({ op: 'upsert', sheet: 'Aportes', row });
   ocupado(btn, true);
-  const ops = [{ op: 'increment', sheet: 'Caixinhas', id: f.id, field: 'Saldo', delta: f.tipo === 'Aporte' ? v : -v },
-    { op: 'upsert', sheet: 'Aportes', row: { ID: novoId(), Data: $('a-data').value, CaixinhaID: f.id, Tipo: f.tipo, Valor: v, CriadoPor: LS.get('quem') || '' } }];
-  if (!(await gravar(ops, f.tipo === 'Aporte' ? 'Aporte registrado' : 'Resgate registrado'))) ocupado(btn, false);
+  const msg = f.mov ? 'Movimentação atualizada' : dest === 'Caixinha' ? 'Valor movido' : f.tipo === 'Aporte' ? 'Aporte registrado' : 'Retirada registrada';
+  if (!(await gravar(ops, msg))) ocupado(btn, false);
 }
 function formSim(tipo) {
   S.form = { kind: 'sim', tipo };
@@ -720,6 +814,8 @@ document.addEventListener('click', e => {
   if (tabBtn) { S.tab = tabBtn.dataset.tab; render(); window.scrollTo(0, 0); return; }
   const q = e.target.closest('#quem button');
   if (q) { document.querySelectorAll('#quem button').forEach(b => b.classList.toggle('on', b === q)); return; }
+  const mt = e.target.closest('#m-tipo button');
+  if (mt && S.form) { S.form.tipo = mt.dataset.mtipo; ajustaMov(); return; }
   const t = e.target.closest('#f-tipo button');
   if (t && S.form) { S.form.tipo = t.dataset.tipo; ajustaForm(); return; }
   if (e.target.id === 'veu') return fecharSheet();
@@ -730,7 +826,11 @@ document.addEventListener('click', e => {
   else if (a === 'fechar') fecharSheet();
   else if (a === 'novo') formItem(S.tab === 'previsoes' ? 'prev' : 'lanc');
   else if (a === 'filtro') { S.filtro = el.dataset.v; render(); }
-  else if (a === 'editar') { const kind = el.dataset.kind; const it = (kind === 'prev' ? S.data.Previsoes : S.data.Lancamentos).find(x => x.ID === id); if (it) formItem(kind, it); }
+  else if (a === 'editar') {
+    const kind = el.dataset.kind; const it = (kind === 'prev' ? S.data.Previsoes : S.data.Lancamentos).find(x => x.ID === id);
+    const mov = it && kind === 'lanc' && it.Origem ? S.data.Aportes.find(m => m.Vinculo === it.ID) : null;
+    if (mov) formAporte(null, null, mov); else if (it) formItem(kind, it);
+  }
   else if (a === 'lancar-prev') { const p = S.data.Previsoes.find(x => x.ID === id); if (p) formItem('lanc', null, { Tipo: p.Tipo, Descricao: p.Descricao, Valor: p.Valor, Categoria: p.Categoria, Metodo: p.Metodo, DataLancamento: hoje(), prevId: p.ID }); }
   else if (a === 'copiar-prev') {
     const P = prevMes(S.mes), destino = addMeses(S.mes + '-01', 1).slice(0, 7);
@@ -747,6 +847,8 @@ document.addEventListener('click', e => {
   else if (a === 'editar-caixinha') formCaixinha(id);
   else if (a === 'excluir-caixinha') { const fid = S.form.id; confirmar('Excluir esta caixinha e o saldo registrado nela?', 'Excluir', () => gravar([{ op: 'delete', sheet: 'Caixinhas', id: fid }], 'Caixinha excluída')); }
   else if (a === 'aporte') formAporte(id, el.dataset.tipo);
+  else if (a === 'mov') { const m = S.data.Aportes.find(x => x.ID === id); if (m) formAporte(null, null, m); }
+  else if (a === 'excluir-mov') { const m = S.form.mov; confirmar('Excluir esta movimentação? O saldo da caixinha volta ao que era' + (m.Destino === 'PIX' ? ' e o gasto do PIX sai do orçamento.' : m.Destino === 'Caixinha' ? ' e o valor sai da caixinha de destino.' : '.'), 'Excluir', () => gravar(desfazerMov(m), 'Movimentação excluída')); }
   else if (a === 'sim-add') formSim(el.dataset.tipo);
   else if (a === 'sim-del') { S.sim.splice(num(el.dataset.i), 1); LS.set('sim', JSON.stringify(S.sim)); render(); }
   else if (a === 'sim-limpar') { S.sim = []; LS.set('sim', '[]'); render(); }
@@ -758,6 +860,7 @@ document.addEventListener('click', e => {
 
 document.addEventListener('input', e => {
   if (e.target.id === 'x-cdi') ajustaTeto();
+  if (e.target.id === 'm-dest') ajustaMov();
   if (!S.form || !e.target.closest('#form-item')) return;
   if (e.target.id === 'f-d2') S.form.d2manual = true;
   if (e.target.id === 'f-met' || e.target.id === 'f-d1') S.form.d2manual = false;
